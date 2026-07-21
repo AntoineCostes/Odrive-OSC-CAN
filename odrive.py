@@ -47,14 +47,42 @@ STATE_ERROR = 3
 
 class ODriveManager:
     def __init__(self):
-        # Create a CAN bus object and flush old messages
         bus = can.interface.Bus("can0", bustype="socketcan")
-        # Flush CAN RX buffer so there are no more old pending messages
         while not (self.bus.recv(timeout=0) is None): pass
-
+        
         print("[ODrive] CAN bus opened");
 
-        self.motors = [ODriveMotor(bus, 0), ODriveMotor(bus, 1), ODriveMotor(bus, 2)]
+        self.motors = [ODriveMotor(bus, 1), ODriveMotor(bus, 2), ODriveMotor(bus, 3)]
+        
+        # TODO check for status
+
+    def update(self):
+        for motor in self.motors:
+            motor.readCAN()
+
+    def setPos(self, index, value):
+        if index < 0 or index > len(self.motors):
+            print("[ODriveManager] cannot set pos: invalid index")
+            return
+        self.motors[index].setPosition(value)
+        
+    def setVel(self, index, value):
+        if index < 0 or index > len(self.motors):
+            print("[ODriveManager] cannot set vel: invalid index")
+            return
+        self.motors[index].setVelocity(value)
+        
+    def setTorque(self, index, value):
+        if index < 0 or index > len(self.motors):
+            print("[ODriveManager] cannot set torque: invalid index")
+            return
+        self.motors[index].setTorque(value)
+        
+    def clearErrors(self, index):
+        if index < 0 or index > len(self.motors):
+            print("[ODriveManager] cannot clear errors: invalid index")
+            return
+        self.motors[index].clearErrors()
 
 
 class ODriveMotor:
@@ -65,8 +93,13 @@ class ODriveMotor:
         self.currentState = STATE_IDLE
         self.currentModeValue = CTRLMODE_UNDEFINED
 
+        self.pos, self.vel = 0.0 
+
         self.setAxisClosedLoop()
         self.setVelocity(0.0)
+
+    def checkCommand(self, msg, command):
+        return msg.arbitration_id == (self.node_id << 5 | command)
     
     def sendCAN(self, command, payload):
         if not self.bus:
@@ -86,13 +119,13 @@ class ODriveMotor:
 
     def readCAN(self, printPosVel = False):
         for msg in self.bus:        
-            if printPosVel:
-                if msg.arbitration_id == (self.node_id << 5 | ID_GET_ENCODER_ESTIMATES): 
-                    pos, vel = struct.unpack('<ff', bytes(msg.data))
-                    print(f"pos: {pos:.3f} [turns], vel: {vel:.3f} [turns/s]")
+            # if printPosVel:
+            if self.checkCommand(msg, ID_GET_ENCODER_ESTIMATES): 
+                self.pos, self.vel = struct.unpack('<ff', bytes(msg.data))
+                    # print(f"pos: {pos:.3f} [turns], vel: {vel:.3f} [turns/s]")
 
             # heartbeat gives us errors and axis state
-            if msg.arbitration_id == (self.node_id << 5 | ID_HEARTBEAT):
+            if self.checkCommand(msg, ID_HEARTBEAT):
                 axis_error = struct.unpack('<I', msg.data[0:4])[0]
                 
                 if axis_error != 0:
@@ -162,7 +195,7 @@ class ODriveMotor:
 
         # Wait for axis to enter closed loop control by scanning heartbeat messages
         for msg in self.bus:
-            if msg.arbitration_id == (self.node_id << 5 | ID_HEARTBEAT): 
+            if self.checkCommand(msg, ID_HEARTBEAT): 
                 error, state, result, traj_done = struct.unpack('<IBBB', bytes(msg.data[:7]))
                 if state == AXISSTATE_CLOSED_LOOP_CONTROL:
                     break

@@ -1,51 +1,37 @@
 
-import can
-from odrive import ODriveMotor
+from odrive import ODriveManager
 import threading
+import time
 
 from pythonosc.dispatcher import Dispatcher
 from pythonosc import osc_server
-import argparse
+from pythonosc.udp_client import SimpleUDPClient
 
 LISTENING_IP = "127.0.0.1"
 LISTENING_PORT = 12345
 
-def setPos(address, index, pos):
-    if index < 0 or index > 2:
-        print("invalid index")
-    motors[index].setPosition(pos)
+def setPos(address, index, value):
+    odrive.setPos(index, value)
     
-def setVel(address, index, vel):
-    if index < 0 or index > 2:
-        print("invalid index")
-    motors[index].setVelocity(vel)
+def setVel(address, index, value):
+    odrive.setPos(index, value)
     
-def setTorque(address, index, torque):
-    if index < 0 or index > 2:
-        print("invalid index")
-    motors[index].setTorque(torque)
+def setTorque(address, index, value):
+    odrive.setTorque(index, value)
 
-    
 def clearErrors(address, index):
-    motors[index].clearErrors()
+    odrive.clearErrors(index)
 
 
 if __name__ == "__main__":
-    bus = can.interface.Bus("can0", bustype="socketcan")
-    # Flush CAN RX buffer so there are no more old pending messages
-    while not (bus.recv(timeout=0) is None): pass
-
-    print("[ODrive] CAN bus opened");
-
-    # TODO check if CAN is working
-
-    motors = [ODriveMotor(bus, 1), ODriveMotor(bus, 2), ODriveMotor(bus, 3)]
+    
+    odrive = ODriveManager()
 
     dispatcher = Dispatcher()
-    dispatcher.map("/pos", setPos)
-    dispatcher.map("/vel", setVel)
-    dispatcher.map("/torque", setTorque)
-    dispatcher.map("/clear", clearErrors)
+    dispatcher.map("/pos", setPos) # index, value
+    dispatcher.map("/vel", setVel) # index, value
+    dispatcher.map("/torque", setTorque) # index, value
+    dispatcher.map("/clear", clearErrors) # index
 
     server = osc_server.ThreadingOSCUDPServer(
         (LISTENING_IP, LISTENING_PORT), dispatcher, timeout=10)
@@ -55,6 +41,24 @@ if __name__ == "__main__":
     t.daemon = True
     t.start()
 
-    while True:
-        for motor in motors:
-            motor.readCAN()
+    client = SimpleUDPClient("127.0.0.1", 12000)
+
+    last_time = time.time()
+
+    try:
+        while True:
+            odrive.update()
+
+            t = round(time.time()*1.0)
+            if t > last_time:
+                last_time = t
+                print("log")
+                client.send_message("/pos", [motor.pos for motor in odrive.motors]) 
+                client.send_message("/vel", [motor.vel for motor in odrive.motors]) 
+
+    except Exception as ex:
+        print(f"Exception {ex} raised in main thread")
+
+    finally:
+        for motor in odrive.motors:
+            motor.setVelocity(0.0)
