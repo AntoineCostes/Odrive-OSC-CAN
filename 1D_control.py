@@ -47,12 +47,29 @@ if __name__ == "__main__":
 
     try:
         while True:
-            t = round(time.time()*30.0)
+            t = round(time.time()*1.0)
             if t > last_time:
                 last_time = t
                 for node_id in odrive.node_ids:
                     client.send_message("/pos", [odrive.latest_encoder[node_id].position for node_id in odrive.node_ids]) 
                     client.send_message("/vel", [odrive.latest_encoder[node_id].velocity for node_id in odrive.node_ids]) 
+
+                for (
+                    node_id,
+                    command_id
+                ), data in (odrive.stats.get_stats()).items():
+
+                    print(
+                        f"Node {node_id} | "
+                        f"CMD 0x{command_id:02X} | "
+                        f"{data['count']} msg/s | "
+                        f"period avg="
+                        f"{data['mean_period'] * 1000:.3f} ms | "
+                        f"min="
+                        f"{data['min_period'] * 1000:.3f} ms | "
+                        f"max="
+                        f"{data['max_period'] * 1000:.3f} ms"
+                    )
 
     except Exception as ex:
         print(f"Exception {ex} raised in main thread")

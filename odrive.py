@@ -104,6 +104,7 @@ class ODriveCANManager:
         self.rx_thread = None
         self.fault_detected = False
 
+        self.stats = CANStatistics()
         self.bus = can.interface.Bus(channel=channel, bustype=bustype, bitrate=bitrate)
         while (self.bus.recv(timeout=0) is not None): pass
         
@@ -136,7 +137,7 @@ class ODriveCANManager:
     def _readCAN(self):
         while self.running:
             try:
-                msg = self.bus.recv(timeout=0.1) # TODO does timeout matter ?
+                msg = self.bus.recv(timeout=0.1) # don't hang if no CAN message arrives
                 if msg is None:
                     continue
                 
@@ -145,6 +146,13 @@ class ODriveCANManager:
                     return
                 
                 command_id = (msg.arbitration_id & 0x1F)
+
+
+                self.stats.register_message(
+                    node_id,
+                    command_id,
+                    msg.timestamp,
+                )
 
                 if command_id == ID_GET_ENCODER_ESTIMATES:
                     if len(msg.data) < 8:
@@ -272,3 +280,112 @@ class ODriveCANManager:
         print("STOP MOTORS")
         for node_id in self.node_ids:
             self.setVel(node_id, 0.0)
+
+
+from collections import defaultdict
+
+
+class CANStatistics:
+
+    def __init__(self):
+
+        # Compteurs depuis la dernière mesure
+        self.message_count = defaultdict(int)
+
+        # Compteur total
+        self.total_count = defaultdict(int)
+
+        # Dernier timestamp de réception par type
+        self.last_timestamp = {}
+
+        # Statistiques de période entre deux messages
+        self.intervals = defaultdict(list)
+
+        self.lock = threading.Lock()
+
+    def register_message(
+        self,
+        node_id,
+        command_id,
+        timestamp,
+    ):
+
+        key = (
+            node_id,
+            command_id,
+        )
+
+        with self.lock:
+
+            self.message_count[key] += 1
+            self.total_count[key] += 1
+
+            if key in self.last_timestamp:
+
+                dt = (
+                    timestamp
+                    - self.last_timestamp[key]
+                )
+
+                self.intervals[key].append(
+                    dt
+                )
+
+            self.last_timestamp[key] = timestamp
+
+    def get_stats(self):
+
+        with self.lock:
+
+            stats = {}
+
+            for key in self.message_count:
+
+                node_id, command_id = key
+
+                count = (
+                    self.message_count[key]
+                )
+
+                intervals = (
+                    self.intervals[key]
+                )
+
+                if intervals:
+
+                    mean_dt = (
+                        sum(intervals)
+                        / len(intervals)
+                    )
+
+                    min_dt = min(
+                        intervals
+                    )
+
+                    max_dt = max(
+                        intervals
+                    )
+
+                else:
+
+                    mean_dt = None
+                    min_dt = None
+                    max_dt = None
+
+                stats[key] = {
+
+                    "count": count,
+
+                    "mean_period": mean_dt,
+
+                    "min_period": min_dt,
+
+                    "max_period": max_dt,
+                }
+
+            # Réinitialiser les compteurs
+            self.message_count.clear()
+
+            self.intervals.clear()
+
+            return stats
