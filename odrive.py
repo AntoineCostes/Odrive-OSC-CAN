@@ -1,6 +1,9 @@
-import can
 import struct
-
+from dataclasses import dataclass
+import queue
+import time
+import threading
+import can
 
 VELOCITY_LIMIT = 10 # turns/sec
 CURRENT_LIMIT = 5 # amperes
@@ -40,76 +43,198 @@ INPUT_MODE_INACTIVE = 0
 INPUT_MODE_PASSTHROUGH = 1
 
 
-STATE_IDLE = 0
-STATE_WAITING_FOR_CLOSED_LOOP = 1
-STATE_CLOSED_LOOP = 2
-STATE_ERROR = 3
+@dataclass
+class EncoderEstimate:
+    position: float
+    velocity: float
+    timestamp: float
 
-class ODriveManager:
-    def __init__(self):
-        bus = can.interface.Bus("can0", bustype="socketcan")
-        while not (self.bus.recv(timeout=0) is None): pass
+
+@dataclass
+class ODriveError:
+    node_id: int
+    axis_error: int
+    timestamp: float
+
+class ODriveCANManager:
+    def __init__(self,
+        node_ids = [1, 2, 3],
+        channel: str = "can0",
+        bustype: str = "socketcan",
+        bitrate: int = 500000,
+        position_timeout: float = 0.1,
+    ):
+        self.node_ids = list(node_ids)
+
+        self.position_timeout = position_timeout
+
+        self.axis_state = { node_id: AXISSTATE_UNDEFINED for node_id in self.node_ids }
+        self.controller_mode = { node_id: CTRLMODE_UNDEFINED for node_id in self.node_ids }
+
+        self.latest_encoder = { node_id: None for node_id in self.node_ids }
+        self.last_heartbeat = { node_id: None for node_id in self.node_ids }
+        self.error_queue = queue.Queue()
+
+        self.lock = threading.Lock()
+        self.running = False
+        self.rx_thread = None
+        self.fault_detected = False
+
+        self.bus = can.interface.Bus(channel=channel, bustype=bustype, bitrate=bitrate)
+        while (self.bus.recv(timeout=0) is not None): pass
         
         print("[ODrive] CAN bus opened");
-
-        self.motors = [ODriveMotor(bus, 1), ODriveMotor(bus, 2), ODriveMotor(bus, 3)]
-        
+        self.start()
         # TODO check for status
 
-    def update(self):
-        for motor in self.motors:
-            motor.readCAN()
+    def start(self):
+        self.rx_thread = threading.Thread(
+            target=self._readCAN,
+            name="ODriveCAN-RX",
+            daemon=True,
+        )
+        self.rx_thread.start()
+        self.running = True
 
-    def setPos(self, index, value):
-        if index < 0 or index > len(self.motors):
-            print("[ODriveManager] cannot set pos: invalid index")
-            return
-        self.motors[index].setPosition(value)
-        
-    def setVel(self, index, value):
-        if index < 0 or index > len(self.motors):
-            print("[ODriveManager] cannot set vel: invalid index")
-            return
-        self.motors[index].setVelocity(value)
-        
-    def setTorque(self, index, value):
-        if index < 0 or index > len(self.motors):
-            print("[ODriveManager] cannot set torque: invalid index")
-            return
-        self.motors[index].setTorque(value)
-        
-    def clearErrors(self, index):
-        if index < 0 or index > len(self.motors):
-            print("[ODriveManager] cannot clear errors: invalid index")
-            return
-        self.motors[index].clearErrors()
+    def stop(self):
+        self.stopMotors()
+        self.running = False
+        if self.rx_thread is not None:
+            self.rx_thread.join(timeout=1.0)
+        self.bus.shutdown()
+        print("ODriveCANManager stopped")
+
+    def _readCAN(self):
+        while self.running:
+            try:
+                msg = self.bus.recv(timeout=0.1)
+                if msg is None:
+                    continue
+                
+                node_id = msg.arbitration_id >> 5
+                if node_id not in self.node_ids:
+                    return
+                
+                command_id = (msg.arbitration_id & 0x1F)
+
+                if command_id == ID_GET_ENCODER_ESTIMATES:
+                    if len(msg.data) < 8:
+                        return
+                    position, velocity = struct.unpack("<ff", msg.data[:8])
+
+                    estimate = EncoderEstimate(position=position, velocity=velocity, timestamp=time.monotonic())
+
+                    with self.lock:
+                        self.latest_encoder[node_id] = estimate
+
+                elif command_id == ID_HEARTBEAT:
+                    if len(msg.data) < 5:
+                        return
+                    now = time.monotonic()
+                    
+                    with self.lock:
+                        self.last_heartbeat[node_id] = now
+
+                    axis_error, axis_state = struct.unpack('<IB', bytes(msg.data[:5]))
+
+                    # after entering closed loop, set limits
+                    if self.axis_state[node_id] != AXISSTATE_CLOSED_LOOP_CONTROL:
+                        if axis_state == AXISSTATE_CLOSED_LOOP_CONTROL:
+                            print("Axis", node_id, "in closed loop, set limits")
+                            self.sendCAN(node_id, ID_SET_LIMITS, struct.pack('<I', VELOCITY_LIMIT, CURRENT_LIMIT))
+
+                    # update state
+                    self.axis_state[node_id] = axis_state
+
+                    # handle error
+                    if axis_error != 0:
+                        if axis_error != 0:
+                            if axis_error & 0x1:
+                                print("ERROR: INITIALIZING")
+                            if axis_error & 0x2:
+                                print("ERROR: SYSTEM_LEVEL")
+                            if axis_error & 0x4:
+                                print("ERROR: TIMING_ERROR")
+                            if axis_error & 0x8:
+                                print("ERROR: MISSING_ESTIMATE")
+                            if axis_error & 0x10: #16
+                                print("ERROR: BAD_CONFIG")
+                            if axis_error & 0x20: #32
+                                print("ERROR: DRV_FAULT")
+                            if axis_error & 0x40: #64
+                                print("ERROR: MISSING_INPUT")
+                            if axis_error & 0x100: #256
+                                print("ERROR: DC_BUS_OVER_VOLTAGE")
+                            if axis_error & 0x200: #512
+                                print("ERROR: DC_BUS_UNDER_VOLTAGE")
+                            if axis_error & 0x400: #1024
+                                print("ERROR: DC_BUS_OVER_CURRENT")
+                            if axis_error & 0x800: #2048
+                                print("ERROR: DC_BUS_OVER_REGEN_CURRENT")
+                            if axis_error & 0x1000: #4096
+                                print("ERROR: CURRENT_LIMIT_VIOLATION")
+                            if axis_error & 0x2000: #8192
+                                print("ERROR: MOTOR_OVER_TEMP")
+                            if axis_error & 0x4000: #16384
+                                print("ERROR: INVERTER_OVER_TEMP")
+                            if axis_error & 0x8000: #32768
+                                print("ERROR: VELOCITY_LIMIT_VIOLATION")
+                            if axis_error & 0x10000: #65536
+                                print("ERROR: POSITION_LIMIT_VIOLATION")
+                            if axis_error & 0x1000000: #16777216 
+                                print("ERROR: WATCHDOG_TIMER_EXPIRED")
+                            if axis_error & 0x2000000: #33554432 
+                                print("ERROR: ESTOP_REQUESTED")
+                            if axis_error & 0x4000000: #67108864 
+                                print("ERROR: SPINOUT_DETECTED")
+                            if axis_error & 0x8000000: #134217728 
+                                print("ERROR: BRAKE_RESISTOR_DISARMED")
+                            if axis_error & 0x10000000: #268435456 
+                                print("ERROR: THERMISTOR_DISCONNECTED")
+                            if axis_error & 0x40000000: #1073741824 
+                                print("ERROR: CALIBRATION_ERROR")
+                                
+                            error = ODriveError(node_id=node_id, axis_error=axis_error, timestamp=now)
+                            self.error_queue.put(error)
+                            self.fault_detected = True
+                            print(
+                                f"[ODRIVE ERROR] "
+                                f"Node {node_id} : "
+                                f"axis_error = "
+                                f"0x{axis_error:08X}"
+                            )
+                            # TODO fault_detected => stop motors ?
+
+            except can.CanError as e:
+                print(f"[CAN RX ERROR] {e}")
+
+            except Exception as e:
+                print(f"[RX THREAD ERROR] {e}")
+                self.fault_detected = True
+
+            finally:
+                self.stopMotors()
 
 
-class ODriveMotor:
-    def __init__(self, bus, node_id):
-        self.node_id = node_id
-        self.bus = bus
+    def get_pending_errors(self):
+            errors = []
+            while True:
+                try:
+                    error = (self.error_queue.get_nowait())
+                    errors.append(error)
+                except queue.Empty:
+                    break
+            return errors
 
-        self.currentState = STATE_IDLE
-        self.currentModeValue = CTRLMODE_UNDEFINED
-
-        self.pos, self.vel = 0.0 
-
-        self.setAxisClosedLoop()
-        self.setVelocity(0.0)
-
-    def checkCommand(self, msg, command):
-        return msg.arbitration_id == (self.node_id << 5 | command)
-    
-    def sendCAN(self, command, payload):
+    def sendCAN(self, node_id, command, payload):
         if not self.bus:
             print("[Odrive] ERROR CAN bus not defined !")
             return
         
         try:
-            print("send CAN", self.node_id, command)
+            print("send CAN", node_id, command)
             self.bus.send(can.Message(
-                arbitration_id=(self.node_id << 5 | command), 
+                arbitration_id=(node_id << 5 | command), 
                 data=payload,
                 is_extended_id=False
             ))
@@ -117,145 +242,49 @@ class ODriveMotor:
         except can.exceptions.CanOperationError:
             print("CanOperationError")
 
-    def readCAN(self, printPosVel = False):
-        for msg in self.bus:        
-            # if printPosVel:
-            if self.checkCommand(msg, ID_GET_ENCODER_ESTIMATES): 
-                self.pos, self.vel = struct.unpack('<ff', bytes(msg.data))
-                    # print(f"pos: {pos:.3f} [turns], vel: {vel:.3f} [turns/s]")
+    def _setAxisClosedLoop(self, node_id):
+        if self.axis_state[node_id] != AXISSTATE_CLOSED_LOOP_CONTROL:
+            return True
+        print("set closed loop", node_id)
+        self.sendCAN(node_id, ID_SET_AXIS_STATE, struct.pack('<I', AXISSTATE_CLOSED_LOOP_CONTROL))
+        return False
 
-            # heartbeat gives us errors and axis state
-            if self.checkCommand(msg, ID_HEARTBEAT):
-                axis_error = struct.unpack('<I', msg.data[0:4])[0]
-                
-                if axis_error != 0:
-                    self.currentState = STATE_ERROR
-                    if axis_error & 0x1:
-                        print("ERROR: INITIALIZING")
-                    if axis_error & 0x2:
-                        print("ERROR: SYSTEM_LEVEL")
-                    if axis_error & 0x4:
-                        print("ERROR: TIMING_ERROR")
-                    if axis_error & 0x8:
-                        print("ERROR: MISSING_ESTIMATE")
-                    if axis_error & 0x10: #16
-                        print("ERROR: BAD_CONFIG")
-                    if axis_error & 0x20: #32
-                        print("ERROR: DRV_FAULT")
-                    if axis_error & 0x40: #64
-                        print("ERROR: MISSING_INPUT")
-                    if axis_error & 0x100: #256
-                        print("ERROR: DC_BUS_OVER_VOLTAGE")
-                    if axis_error & 0x200: #512
-                        print("ERROR: DC_BUS_UNDER_VOLTAGE")
-                    if axis_error & 0x400: #1024
-                        print("ERROR: DC_BUS_OVER_CURRENT")
-                    if axis_error & 0x800: #2048
-                        print("ERROR: DC_BUS_OVER_REGEN_CURRENT")
-                    if axis_error & 0x1000: #4096
-                        print("ERROR: CURRENT_LIMIT_VIOLATION")
-                    if axis_error & 0x2000: #8192
-                        print("ERROR: MOTOR_OVER_TEMP")
-                    if axis_error & 0x4000: #16384
-                        print("ERROR: INVERTER_OVER_TEMP")
-                    if axis_error & 0x8000: #32768
-                        print("ERROR: VELOCITY_LIMIT_VIOLATION")
-                    if axis_error & 0x10000: #65536
-                        print("ERROR: POSITION_LIMIT_VIOLATION")
-                    if axis_error & 0x1000000: #16777216 
-                        print("ERROR: WATCHDOG_TIMER_EXPIRED")
-                    if axis_error & 0x2000000: #33554432 
-                        print("ERROR: ESTOP_REQUESTED")
-                    if axis_error & 0x4000000: #67108864 
-                        print("ERROR: SPINOUT_DETECTED")
-                    if axis_error & 0x8000000: #134217728 
-                        print("ERROR: BRAKE_RESISTOR_DISARMED")
-                    if axis_error & 0x10000000: #268435456 
-                        print("ERROR: THERMISTOR_DISCONNECTED")
-                    if axis_error & 0x40000000: #1073741824 
-                        print("ERROR: CALIBRATION_ERROR")
-
-                axis_state = msg.data[4]
-
-                # if we recovered from an error, update state
-                if self.currentState == STATE_ERROR and axis_error == 0:
-                    if axis_state == AXISSTATE_CLOSED_LOOP_CONTROL:
-                        self.currentState = STATE_CLOSED_LOOP
-                    if axis_state == AXISSTATE_IDLE:
-                        self.currentState = STATE_IDLE
-
-                # if we succeeded entering closed loop, set limits
-                if self.currentState == STATE_WAITING_FOR_CLOSED_LOOP and axis_state == AXISSTATE_CLOSED_LOOP_CONTROL :
-                    self.sendCAN(ID_SET_LIMITS, struct.pack('<I', VELOCITY_LIMIT, CURRENT_LIMIT))
-                    self.currentState = STATE_CLOSED_LOOP
-                    print("Closed loop OK !")
-
-    def setAxisClosedLoop(self):
-        self.sendCAN(ID_SET_AXIS_STATE, struct.pack('<I', AXISSTATE_CLOSED_LOOP_CONTROL))
-
-        # Wait for axis to enter closed loop control by scanning heartbeat messages
-        for msg in self.bus:
-            if self.checkCommand(msg, ID_HEARTBEAT): 
-                error, state, result, traj_done = struct.unpack('<IBBB', bytes(msg.data[:7]))
-                if state == AXISSTATE_CLOSED_LOOP_CONTROL:
-                    break
-        
-        self.currentState = STATE_CLOSED_LOOP
-
-        print("Closed loop: OK")
-
-    def setControllerMode(self, mode):
-        if (self.currentState != STATE_CLOSED_LOOP):
+    def _setControllerMode(self, node_id, mode):
+        if not self._setAxisClosedLoop(node_id):
+            print("set mode not ready")
             return
 
-        if self.currentModeValue == mode:
+        if self.controller_mode[node_id] == mode:
             print("mode already set")
         else:
-            self.sendCAN(ID_SET_CONTROLLER_MODE, struct.pack('<II', mode, INPUT_MODE_PASSTHROUGH))
             print("set mode: "+CTRLMODE_NAMES[mode])
-            self.currentModeValue = mode
-            
-    def resetPosistion(self):
-        if (self.currentState != STATE_CLOSED_LOOP):
+            self.sendCAN(node_id, ID_SET_CONTROLLER_MODE, struct.pack('<II', mode, INPUT_MODE_PASSTHROUGH))
+            self.controller_mode[node_id] = mode
+
+    def setPos(self, node_id, turns):
+        if not self._setAxisClosedLoop(node_id):
+            print("set pos not ready")
             return
-        
-        if (self.currentModeValue != CTRLMODE_POS_CTRL):
-            self.setControllerMode(CTRLMODE_POS_CTRL)
-        
-        self.sendCAN(ID_SET_ABSOLUTE_POSITION, struct.pack('<f', 0.0))
+        self._setControllerMode(node_id, CTRLMODE_POS_CTRL)
+        self.sendCAN(node_id, ID_SET_INPUT_POS, struct.pack('<fhh', turns, 0, 0)) # position, velocity feedforward, torque feedforward
 
-    def setPosition(self, turns):
-        if (self.currentState != STATE_CLOSED_LOOP):
-            self.setAxisClosedLoop()
+    def setVel(self, node_id, turn_per_sec):
+        if not self._setAxisClosedLoop(node_id):
+            print("set vel not ready")
             return
-        
-        print("set pos")
+        self._setControllerMode(node_id, CTRLMODE_VEL_CTRL)
+        self.sendCAN(node_id, ID_SET_INPUT_VEL, struct.pack('<ff', turn_per_sec, 0.0)) # velocity, torque feedforward
 
-        if (self.currentModeValue != CTRLMODE_POS_CTRL):
-            self.setControllerMode(CTRLMODE_POS_CTRL)
-        
-        self.sendCAN(ID_SET_INPUT_POS, struct.pack('<fhh', turns, 0, 0)) # position, velocity feedforward, torque feedforward
-
-    def setVelocity(self, turn_per_sec):
-        if (self.currentState != STATE_CLOSED_LOOP):
-            self.setAxisClosedLoop()
+    def setTorque(self, node_id, newton_meters):
+        if not self._setAxisClosedLoop(node_id):
+            print("set torque not ready")
             return
+        self._setControllerMode(node_id, CTRLMODE_TORQUE_CTRL)
+        self.sendCAN(node_id, ID_SET_INPUT_TORQUE, struct.pack('<f', newton_meters)) # torque
         
-        print("set vel")
+    def clearErrors(self, node_id):
+        self.sendCAN(node_id, ID_CLEAR_ERRORS, b'') # no payload
         
-        if (self.currentModeValue != CTRLMODE_VEL_CTRL):
-            self.setControllerMode(CTRLMODE_VEL_CTRL)
-            
-        self.sendCAN(ID_SET_INPUT_VEL, struct.pack('<ff', turn_per_sec, 0.0)) # velocity, torque feedforward
-
-    def setTorque(self, NewtonMeters):
-        if (self.currentState != STATE_CLOSED_LOOP):
-            return
-        
-        if (self.currentModeValue != CTRLMODE_TORQUE_CTRL):
-            self.setControllerMode(CTRLMODE_TORQUE_CTRL)
-            
-        self.sendCAN(ID_SET_INPUT_TORQUE, struct.pack('<f', NewtonMeters)) # torque
-
-    def clearErrors(self):
-        self.sendCAN(ID_CLEAR_ERRORS, b'') # no payload
+    def stopMotors(self):
+        for node_id in self.node_ids:
+            self.setVel(node_id, 0.0)

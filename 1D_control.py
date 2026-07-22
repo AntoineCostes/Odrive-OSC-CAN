@@ -1,5 +1,5 @@
 
-from odrive import ODriveManager
+from odrive import ODriveCANManager
 import threading
 import time
 
@@ -25,7 +25,7 @@ def clearErrors(address, index):
 
 if __name__ == "__main__":
     
-    odrive = ODriveManager()
+    odrive = ODriveCANManager()
 
     dispatcher = Dispatcher()
     dispatcher.map("/pos", setPos) # index, value
@@ -47,14 +47,12 @@ if __name__ == "__main__":
 
     try:
         while True:
-            odrive.update()
-
             t = round(time.time()*1.0)
             if t > last_time:
                 last_time = t
-                print("log")
-                client.send_message("/pos", [motor.pos for motor in odrive.motors]) 
-                client.send_message("/vel", [motor.vel for motor in odrive.motors]) 
+                print(odrive.latest_encoder)
+                # client.send_message("/pos", [motor.pos for motor in odrive.motors]) 
+                # client.send_message("/vel", [motor.vel for motor in odrive.motors]) 
 
     except Exception as ex:
         print(f"Exception {ex} raised in main thread")
