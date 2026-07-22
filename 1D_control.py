@@ -14,7 +14,7 @@ def setPos(address, index, value):
     odrive.setPos(index, value)
     
 def setVel(address, index, value):
-    odrive.setPos(index, value)
+    odrive.setVel(index, value)
     
 def setTorque(address, index, value):
     odrive.setTorque(index, value)
@@ -50,13 +50,12 @@ if __name__ == "__main__":
             t = round(time.time()*1.0)
             if t > last_time:
                 last_time = t
-                print(odrive.latest_encoder)
-                # client.send_message("/pos", [motor.pos for motor in odrive.motors]) 
-                # client.send_message("/vel", [motor.vel for motor in odrive.motors]) 
+                for node_id in odrive.node_ids:
+                    client.send_message("/pos", [odrive.latest_encoder[node_id].position for node_id in odrive.node_ids]) 
+                    client.send_message("/vel", [odrive.latest_encoder[node_id].velocity for node_id in odrive.node_ids]) 
 
     except Exception as ex:
         print(f"Exception {ex} raised in main thread")
 
     finally:
-        for motor in odrive.motors:
-            motor.setVelocity(0.0)
+        odrive.stopMotors()

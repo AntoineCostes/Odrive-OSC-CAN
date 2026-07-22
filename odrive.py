@@ -5,8 +5,8 @@ import time
 import threading
 import can
 
-VELOCITY_LIMIT = 10 # turns/sec
-CURRENT_LIMIT = 5 # amperes
+VELOCITY_LIMIT = 10.0 # turns/sec
+CURRENT_LIMIT = 5.0 # amperes
 
 # Command ids
 # https://odrive-cdn.nyc3.digitaloceanspaces.com/releases/docs/NBlf3rgI8zzL4eTvLjFqdETy04VScp3e8YNoAb3BcPY/manual/can-protocol.html#overview
@@ -76,7 +76,7 @@ class ODriveCANManager:
         self.error_queue = queue.Queue()
 
         self.lock = threading.Lock()
-        self.running = False
+        self.running = True
         self.rx_thread = None
         self.fault_detected = False
 
@@ -87,6 +87,12 @@ class ODriveCANManager:
         self.start()
         # TODO check for status
 
+        for node_id in self.node_ids:
+            self._setAxisClosedLoop(node_id)
+            while self.axis_state[node_id] != AXISSTATE_CLOSED_LOOP_CONTROL:
+                pass
+            self.setVel(node_id, 0.0)
+
     def start(self):
         self.rx_thread = threading.Thread(
             target=self._readCAN,
@@ -94,7 +100,6 @@ class ODriveCANManager:
             daemon=True,
         )
         self.rx_thread.start()
-        self.running = True
 
     def stop(self):
         self.stopMotors()
@@ -107,7 +112,7 @@ class ODriveCANManager:
     def _readCAN(self):
         while self.running:
             try:
-                msg = self.bus.recv(timeout=0.1)
+                msg = self.bus.recv(timeout=1.0)
                 if msg is None:
                     continue
                 
@@ -141,7 +146,7 @@ class ODriveCANManager:
                     if self.axis_state[node_id] != AXISSTATE_CLOSED_LOOP_CONTROL:
                         if axis_state == AXISSTATE_CLOSED_LOOP_CONTROL:
                             print("Axis", node_id, "in closed loop, set limits")
-                            self.sendCAN(node_id, ID_SET_LIMITS, struct.pack('<I', VELOCITY_LIMIT, CURRENT_LIMIT))
+                            self.sendCAN(node_id, ID_SET_LIMITS, struct.pack('<ff', VELOCITY_LIMIT, CURRENT_LIMIT))
 
                     # update state
                     self.axis_state[node_id] = axis_state
@@ -212,9 +217,6 @@ class ODriveCANManager:
                 print(f"[RX THREAD ERROR] {e}")
                 self.fault_detected = True
 
-            finally:
-                self.stopMotors()
-
 
     def get_pending_errors(self):
             errors = []
@@ -243,25 +245,29 @@ class ODriveCANManager:
             print("CanOperationError")
 
     def _setAxisClosedLoop(self, node_id):
-        if self.axis_state[node_id] != AXISSTATE_CLOSED_LOOP_CONTROL:
+        if node_id not in self.node_ids:
+            return
+        if self.axis_state[node_id] == AXISSTATE_CLOSED_LOOP_CONTROL:
             return True
         print("set closed loop", node_id)
         self.sendCAN(node_id, ID_SET_AXIS_STATE, struct.pack('<I', AXISSTATE_CLOSED_LOOP_CONTROL))
         return False
 
     def _setControllerMode(self, node_id, mode):
-        if not self._setAxisClosedLoop(node_id):
-            print("set mode not ready")
+        if node_id not in self.node_ids:
             return
-
-        if self.controller_mode[node_id] == mode:
-            print("mode already set")
-        else:
+        if not self._setAxisClosedLoop(node_id):
+            print("not ready")
+            return
+        if self.controller_mode[node_id] != mode:
             print("set mode: "+CTRLMODE_NAMES[mode])
             self.sendCAN(node_id, ID_SET_CONTROLLER_MODE, struct.pack('<II', mode, INPUT_MODE_PASSTHROUGH))
             self.controller_mode[node_id] = mode
-
+        return False
+    
     def setPos(self, node_id, turns):
+        if node_id not in self.node_ids:
+            return
         if not self._setAxisClosedLoop(node_id):
             print("set pos not ready")
             return
@@ -269,6 +275,8 @@ class ODriveCANManager:
         self.sendCAN(node_id, ID_SET_INPUT_POS, struct.pack('<fhh', turns, 0, 0)) # position, velocity feedforward, torque feedforward
 
     def setVel(self, node_id, turn_per_sec):
+        if node_id not in self.node_ids:
+            return
         if not self._setAxisClosedLoop(node_id):
             print("set vel not ready")
             return
@@ -276,6 +284,8 @@ class ODriveCANManager:
         self.sendCAN(node_id, ID_SET_INPUT_VEL, struct.pack('<ff', turn_per_sec, 0.0)) # velocity, torque feedforward
 
     def setTorque(self, node_id, newton_meters):
+        if node_id not in self.node_ids:
+            return
         if not self._setAxisClosedLoop(node_id):
             print("set torque not ready")
             return
@@ -286,5 +296,6 @@ class ODriveCANManager:
         self.sendCAN(node_id, ID_CLEAR_ERRORS, b'') # no payload
         
     def stopMotors(self):
+        print("STOP MOTORS")
         for node_id in self.node_ids:
             self.setVel(node_id, 0.0)
