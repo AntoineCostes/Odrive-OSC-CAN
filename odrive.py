@@ -42,6 +42,30 @@ CTRLMODE_NAMES = ["Undefined", "Torque", "Velocity", "Position"]
 INPUT_MODE_INACTIVE = 0
 INPUT_MODE_PASSTHROUGH = 1
 
+ERROR_NAMES = {
+    0x1:"INITIALIZING",
+    0x2:"SYSTEM_LEVEL",
+    0x4:"TIMING_ERROR",
+    0x8:"MISSING_ESTIMATE",
+    0x10:"BAD_CONFIG", 
+    0x20:"DRV_FAULT",
+    0x40:"MISSING_INPUT", #64
+    0x100:"DC_BUS_OVER_VOLTAGE",
+    0x200:"DC_BUS_UNDER_VOLTAGE",
+    0x400:"DC_BUS_OVER_CURRENT", #1024
+    0x800:"DC_BUS_OVER_REGEN_CURRENT",
+    0x1000:"CURRENT_LIMIT_VIOLATION",
+    0x2000:"MOTOR_OVER_TEMP", 
+    0x4000:"INVERTER_OVER_TEMP",
+    0x8000:"VELOCITY_LIMIT_VIOLATION",
+    0x10000:"POSITION_LIMIT_VIOLATION",
+    0x1000000:"WATCHDOG_TIMER_EXPIRED",
+    0x2000000:"ESTOP_REQUESTED",  
+    0x4000000:"SPINOUT_DETECTED",
+    0x8000000:"BRAKE_RESISTOR_DISARMED",
+    0x10000000:"THERMISTOR_DISCONNECTED",
+    0x40000000:"CALIBRATION_ERROR" #1073741824 
+}
 
 @dataclass
 class EncoderEstimate:
@@ -112,7 +136,7 @@ class ODriveCANManager:
     def _readCAN(self):
         while self.running:
             try:
-                msg = self.bus.recv(timeout=1.0)
+                msg = self.bus.recv(timeout=0.1) # TODO does timeout matter ?
                 if msg is None:
                     continue
                 
@@ -154,60 +178,10 @@ class ODriveCANManager:
                     # handle error
                     if axis_error != 0:
                         if axis_error != 0:
-                            if axis_error & 0x1:
-                                print("ERROR: INITIALIZING")
-                            if axis_error & 0x2:
-                                print("ERROR: SYSTEM_LEVEL")
-                            if axis_error & 0x4:
-                                print("ERROR: TIMING_ERROR")
-                            if axis_error & 0x8:
-                                print("ERROR: MISSING_ESTIMATE")
-                            if axis_error & 0x10: #16
-                                print("ERROR: BAD_CONFIG")
-                            if axis_error & 0x20: #32
-                                print("ERROR: DRV_FAULT")
-                            if axis_error & 0x40: #64
-                                print("ERROR: MISSING_INPUT")
-                            if axis_error & 0x100: #256
-                                print("ERROR: DC_BUS_OVER_VOLTAGE")
-                            if axis_error & 0x200: #512
-                                print("ERROR: DC_BUS_UNDER_VOLTAGE")
-                            if axis_error & 0x400: #1024
-                                print("ERROR: DC_BUS_OVER_CURRENT")
-                            if axis_error & 0x800: #2048
-                                print("ERROR: DC_BUS_OVER_REGEN_CURRENT")
-                            if axis_error & 0x1000: #4096
-                                print("ERROR: CURRENT_LIMIT_VIOLATION")
-                            if axis_error & 0x2000: #8192
-                                print("ERROR: MOTOR_OVER_TEMP")
-                            if axis_error & 0x4000: #16384
-                                print("ERROR: INVERTER_OVER_TEMP")
-                            if axis_error & 0x8000: #32768
-                                print("ERROR: VELOCITY_LIMIT_VIOLATION")
-                            if axis_error & 0x10000: #65536
-                                print("ERROR: POSITION_LIMIT_VIOLATION")
-                            if axis_error & 0x1000000: #16777216 
-                                print("ERROR: WATCHDOG_TIMER_EXPIRED")
-                            if axis_error & 0x2000000: #33554432 
-                                print("ERROR: ESTOP_REQUESTED")
-                            if axis_error & 0x4000000: #67108864 
-                                print("ERROR: SPINOUT_DETECTED")
-                            if axis_error & 0x8000000: #134217728 
-                                print("ERROR: BRAKE_RESISTOR_DISARMED")
-                            if axis_error & 0x10000000: #268435456 
-                                print("ERROR: THERMISTOR_DISCONNECTED")
-                            if axis_error & 0x40000000: #1073741824 
-                                print("ERROR: CALIBRATION_ERROR")
-                                
                             error = ODriveError(node_id=node_id, axis_error=axis_error, timestamp=now)
+                            print("ERROR on node", error.node_id, ":", ERROR_NAMES[error.axis_error])
                             self.error_queue.put(error)
                             self.fault_detected = True
-                            print(
-                                f"[ODRIVE ERROR] "
-                                f"Node {node_id} : "
-                                f"axis_error = "
-                                f"0x{axis_error:08X}"
-                            )
                             # TODO fault_detected => stop motors ?
 
             except can.CanError as e:
@@ -217,8 +191,7 @@ class ODriveCANManager:
                 print(f"[RX THREAD ERROR] {e}")
                 self.fault_detected = True
 
-
-    def get_pending_errors(self):
+    def getPendingErrors(self):
             errors = []
             while True:
                 try:

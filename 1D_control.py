@@ -47,7 +47,7 @@ if __name__ == "__main__":
 
     try:
         while True:
-            t = round(time.time()*1.0)
+            t = round(time.time()*30.0)
             if t > last_time:
                 last_time = t
                 for node_id in odrive.node_ids:
