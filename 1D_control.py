@@ -2,6 +2,7 @@
 from odrive import ODriveCANManager
 import threading
 import time
+import math
 
 from pythonosc.dispatcher import Dispatcher
 from pythonosc import osc_server
@@ -25,7 +26,7 @@ def clearErrors(address, index):
 
 if __name__ == "__main__":
     
-    odrive = ODriveCANManager()
+    odrive = ODriveCANManager(node_ids= [1,2,3])
 
     dispatcher = Dispatcher()
     dispatcher.map("/pos", setPos) # index, value
@@ -43,32 +44,78 @@ if __name__ == "__main__":
 
     client = SimpleUDPClient("127.0.0.1", 12000)
 
-    last_time = time.time()
+    speed = 1.0
+    last_time = time.time()*speed
+    age_max = 0
+    dt = []
 
     try:
         while True:
-            t = round(time.time()*1.0)
+            
+            age = round((time.monotonic() - odrive.latest_encoder[2].timestamp)*1000)
+            dt.append(age)
+            if age > age_max:
+                age_max = age
+            time.sleep(0.001)
+            
+            t = math.floor(time.time()*speed)
             if t > last_time:
                 last_time = t
+                
+                print("---")
+                print("age de la derniere position:", round(sum(dt)/len(dt), 2), "ms (max ", age_max, ")")
+                
                 for node_id in odrive.node_ids:
                     client.send_message("/pos", [odrive.latest_encoder[node_id].position for node_id in odrive.node_ids]) 
                     client.send_message("/vel", [odrive.latest_encoder[node_id].velocity for node_id in odrive.node_ids]) 
-
+                
+                stats = (odrive.stats.get_stats())
                 for (
                     node_id,
                     command_id
-                ), data in (odrive.stats.get_stats()).items():
+                ), data in stats.items():
+
+                    count = data[
+                        "count"
+                    ]
+
+                    frequency = data[
+                        "frequency"
+                    ]
+
+                    mean_period = data[
+                        "mean_period"
+                    ]
+
+                    min_period = data[
+                        "min_period"
+                    ]
+
+                    max_period = data[
+                        "max_period"
+                    ]
+                    if mean_period is None:
+
+                        print(
+                            f"Node {node_id} | "
+                            f"CMD 0x{command_id:02X} | "
+                            f"{count} msg/s | "
+                            f"periode: N/A"
+                        )
+
+                        continue
 
                     print(
                         f"Node {node_id} | "
                         f"CMD 0x{command_id:02X} | "
-                        f"{data['count']} msg/s | "
-                        f"period avg="
-                        f"{data['mean_period'] * 1000:.3f} ms | "
+                        f"{count} msg/s | "
+                        f"freq={frequency:.2f} Hz | "
+                        f"period="
+                        f"{mean_period * 1000:.3f} ms | "
                         f"min="
-                        f"{data['min_period'] * 1000:.3f} ms | "
+                        f"{min_period * 1000:.3f} ms | "
                         f"max="
-                        f"{data['max_period'] * 1000:.3f} ms"
+                        f"{max_period * 1000:.3f} ms"
                     )
 
     except Exception as ex:
