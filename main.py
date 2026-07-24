@@ -1,6 +1,6 @@
 
 from odrive import ODriveCANManager
-from logger import DataLogger
+from logger import Logger
 import threading
 import time
 import math
@@ -14,16 +14,24 @@ LISTENING_IP = "127.0.0.1"
 LISTENING_PORT = 12345
 
 def setPos(address, index, value):
+    global odrive
     odrive.setPos(index, value)
     
 def setVel(address, index, value):
+    global odrive
     odrive.setVel(index, value)
     
 def setTorque(address, index, value):
+    global odrive
     odrive.setTorque(index, value)
 
 def clearErrors(address, index):
+    global odrive
     odrive.clearErrors(index)
+    
+def plot(address):
+    global stop_and_plot
+    stop_and_plot = True
 
     
 class EncoderEstimate:
@@ -36,12 +44,14 @@ if __name__ == "__main__":
     
     odrive = ODriveCANManager(node_ids= [1,2,3])
     logger = Logger()
+    stop_and_plot = False
 
     dispatcher = Dispatcher()
     dispatcher.map("/pos", setPos) # index, value
     dispatcher.map("/vel", setVel) # index, value
     dispatcher.map("/torque", setTorque) # index, value
     dispatcher.map("/clear", clearErrors) # index
+    dispatcher.map("/plot", plot)
 
     server = osc_server.ThreadingOSCUDPServer(
         (LISTENING_IP, LISTENING_PORT), dispatcher, timeout=10)
@@ -53,7 +63,7 @@ if __name__ == "__main__":
 
     client = SimpleUDPClient("127.0.0.1", 12000)
 
-    log_speed = 1.0
+    log_speed = .2
     last_time = time.time()*log_speed
     estimate_ages = [] # to compute mean, usually 5 ms
 
@@ -62,7 +72,17 @@ if __name__ == "__main__":
     try:
         while True:
             time.sleep(0.001) # let other threads breathe
-
+            
+            if stop_and_plot:
+                print("STOP AND PLOT")
+                odrive.stop() 
+                logger.save_plots()
+                stop_and_plot = False
+                while True:
+                    plot.pause(0.1)
+                    time.sleep(1.0)
+                    
+                
             if odrive.fault_detected:
                 print("ERROR ")
                 print(odrive.getPendingErrors())
@@ -74,7 +94,7 @@ if __name__ == "__main__":
                     
                                   
                     logger.record(
-                        name="pos_"+str(node_id),
+                        label="pos_"+str(node_id),
                         value=estimate.position,
                         timestamp=estimate.timestamp,
                         plot_id="position",
@@ -82,8 +102,8 @@ if __name__ == "__main__":
                         style_id="actual",
                     )
                     logger.record(
-                        name="vel_"+str(node_id),
-                        value=estimate.position,
+                        label="vel_"+str(node_id),
+                        value=estimate.velocity,
                         timestamp=estimate.timestamp,
                         plot_id="velocity",
                         curve_id=str(node_id),
@@ -102,14 +122,17 @@ if __name__ == "__main__":
                 
                 print("---")
                 if len(estimate_ages):
-                    print(len(estimate_ages), "positions received, age mean", round(sum(estimate_ages)/len(estimate_ages), 2), "ms, age max ", max(estimate_ages), "ms")
+                    print(len(estimate_ages), "positions received over", 1.0/log_speed, "s, age mean", round(sum(estimate_ages)/len(estimate_ages), 2), "ms, age max ", max(estimate_ages), "ms")
                     estimate_ages = []
                 else:
                     print("pas de nouvelle position")
                 
                 odrive.stats.print()
+                
+                stop_and_plot = True
 
                 for node_id in odrive.node_ids:
+                    #print([last_estimates[node_id].timestamp, last_estimates[node_id].position, last_estimates[node_id].velocity])
                     client.send_message("/pos", [last_estimates[node_id].position for node_id in odrive.node_ids]) 
                     client.send_message("/vel", [last_estimates[node_id].velocity for node_id in odrive.node_ids]) 
 
@@ -118,4 +141,4 @@ if __name__ == "__main__":
         print(f"Exception {ex} raised in main thread")
 
     finally:
-        odrive.stopMotors()
+        odrive.stop()

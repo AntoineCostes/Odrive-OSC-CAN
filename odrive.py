@@ -117,7 +117,7 @@ class ODriveCANManager:
             self._setAxisClosedLoop(node_id)
             while self.axis_state[node_id] != AXISSTATE_CLOSED_LOOP_CONTROL:
                 pass
-            self.setVel(node_id, 0.0)
+            self.setVel(node_id, node_id*1.0)
 
     def start(self):
         self.rx_thread = threading.Thread(
