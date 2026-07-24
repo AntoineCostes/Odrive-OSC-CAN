@@ -14,12 +14,30 @@ LISTENING_IP = "127.0.0.1"
 LISTENING_PORT = 12345
 
 def setPos(address, index, value):
-    global odrive
+    global odrive, logger
     odrive.setPos(index, value)
+
+    logger.record(
+        label="pos_"+str(index),
+        value=value,
+        timestamp=time.monotonic(),
+        plot_id="position",
+        curve_id=str(index),
+        style_id="target",
+    )
     
 def setVel(address, index, value):
-    global odrive
+    global odrive, logger
     odrive.setVel(index, value)
+    
+    logger.record(
+        label="vel_"+str(index),
+        value=value,
+        timestamp=time.monotonic(),
+        plot_id="velocity",
+        curve_id=str(index),
+        style_id="target",
+    )
     
 def setTorque(address, index, value):
     global odrive
@@ -33,7 +51,7 @@ def plot(address):
     global stop_and_plot
     stop_and_plot = True
     
-def t0(address):
+def reset(address):
     global logger
     logger.reset()
 
@@ -56,7 +74,7 @@ if __name__ == "__main__":
     dispatcher.map("/torque", setTorque) # index, value
     dispatcher.map("/clear", clearErrors) # index
     dispatcher.map("/plot", plot)
-    dispatcher.map("/t0", t0)
+    dispatcher.map("/reset", reset)
 
     server = osc_server.ThreadingOSCUDPServer(
         (LISTENING_IP, LISTENING_PORT), dispatcher, timeout=10)
@@ -68,7 +86,7 @@ if __name__ == "__main__":
 
     client = SimpleUDPClient("127.0.0.1", 12000)
 
-    log_speed = .2
+    log_speed = 1.0
     last_time = time.time()*log_speed
     estimate_ages = [] # to compute mean, usually 5 ms
 
@@ -79,7 +97,6 @@ if __name__ == "__main__":
         while True:
             time.sleep(0.001) # let other threads breathe
             
-            
             if stop_and_plot:
                 print("STOP AND PLOT")
                 odrive.stop() 
@@ -88,13 +105,11 @@ if __name__ == "__main__":
                 while True:
                     plot.pause(0.1)
                     time.sleep(1.0)
-                    
-                
-            
+
+            # log pos_vel
             for node_id, estimate in odrive.getNewEstimates().items():
                 if estimate is not None:
                     last_estimates[node_id] = copy(estimate)
-                    
                                   
                     logger.record(
                         label="pos_"+str(node_id),
@@ -116,9 +131,8 @@ if __name__ == "__main__":
                     # compute age
                     estimate_ages.append(round((time.monotonic() - estimate.timestamp) *1000)) # ms
 
-
                     
-            # print stuff log_speed times by seconds
+            # log_speed times by seconds, print stuff
             t = math.floor(time.time()*log_speed)
             if t > last_time:
                 last_time = t
