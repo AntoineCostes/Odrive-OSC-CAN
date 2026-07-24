@@ -32,6 +32,10 @@ def clearErrors(address, index):
 def plot(address):
     global stop_and_plot
     stop_and_plot = True
+    
+def t0(address):
+    global logger
+    logger.reset()
 
     
 class EncoderEstimate:
@@ -52,6 +56,7 @@ if __name__ == "__main__":
     dispatcher.map("/torque", setTorque) # index, value
     dispatcher.map("/clear", clearErrors) # index
     dispatcher.map("/plot", plot)
+    dispatcher.map("/t0", t0)
 
     server = osc_server.ThreadingOSCUDPServer(
         (LISTENING_IP, LISTENING_PORT), dispatcher, timeout=10)
@@ -69,6 +74,7 @@ if __name__ == "__main__":
 
     last_estimates = {} # { node_id:estimate }
 
+    logger.reset()
     try:
         while True:
             time.sleep(0.001) # let other threads breathe
@@ -128,8 +134,6 @@ if __name__ == "__main__":
                     print("pas de nouvelle position")
                 
                 odrive.stats.print()
-                
-                stop_and_plot = True
 
                 for node_id in odrive.node_ids:
                     #print([last_estimates[node_id].timestamp, last_estimates[node_id].position, last_estimates[node_id].velocity])

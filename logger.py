@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from collections import defaultdict
 import os
+import time
 from datetime import datetime
 from PIL import Image
 
@@ -29,6 +30,7 @@ class Logger:
                 )
             )
         )
+        self.t0 = time.monotonic()
 
         # Configuration visuelle
         self.curve_colors = {}
@@ -76,6 +78,19 @@ class Logger:
             ylabel="Vitesse",
         )
 
+    def reset(self):
+        self.t0 = time.monotonic()
+        self.data = defaultdict(
+            lambda: defaultdict(
+                lambda: defaultdict(
+                    lambda: {
+                        "names": [],
+                        "times": [],
+                        "values": [],
+                    }
+                )
+            )
+        )
     # ==========================================================
     # Configuration
     # ==========================================================
@@ -115,6 +130,7 @@ class Logger:
             plot_id
         ] = ylabel
 
+        
     # ==========================================================
     # Enregistrement
     # ==========================================================
@@ -142,7 +158,7 @@ class Logger:
             }
 
         self.data[plot_id][key]["times"].append(
-            timestamp
+            timestamp - self.t0
         )
 
         self.data[plot_id][key]["values"].append(
