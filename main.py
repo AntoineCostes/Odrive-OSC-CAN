@@ -1,5 +1,6 @@
 
 from odrive import ODriveCANManager
+from logger import DataLogger
 import threading
 import time
 import math
@@ -27,6 +28,7 @@ def clearErrors(address, index):
 if __name__ == "__main__":
     
     odrive = ODriveCANManager(node_ids= [1,2,3])
+    logger = DataLogger()
 
     dispatcher = Dispatcher()
     dispatcher.map("/pos", setPos) # index, value
@@ -44,25 +46,33 @@ if __name__ == "__main__":
 
     client = SimpleUDPClient("127.0.0.1", 12000)
 
-    speed = 1.0
-    last_time = time.time()*speed
-    age_max = 0
-    dt = []
+    log_speed = 1.0
+    last_time = time.time()*log_speed
+    age_max = 0 
+    ages = [] # to compute mean, usually ms
 
     try:
         while True:
-            age = round((time.monotonic() - odrive.latest_encoder[2].timestamp)*1000) # ms
-            dt.append(age)
+            time.sleep(0.001) # let other threads breathe
+
+            if odrive.fault_detected:
+                print("FAULT")
+                print(odrive.getPendingErrors())
+                # TODO test this
+
+            # compute the age of last measured position (should be max 10ms for 100Hz streaming)
+            age = round((time.monotonic() - odrive.latest_encoder[1].timestamp)*1000) # ms
+            ages.append(age)
             if age > age_max:
                 age_max = age
-            time.sleep(0.001)
             
-            t = math.floor(time.time()*speed)
+            # print stuff log_speed times by seconds
+            t = math.floor(time.time()*log_speed)
             if t > last_time:
                 last_time = t
                 
                 print("---")
-                print("age de la derniere position:", round(sum(dt)/len(dt), 2), "ms (max ", age_max, ")")
+                print("age de la derniere position:", round(sum(ages)/len(ages), 2), "ms (max ", age_max, ")")
 
                 odrive.stats.print()
 
