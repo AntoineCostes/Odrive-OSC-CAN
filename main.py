@@ -4,6 +4,7 @@ from logger import DataLogger
 import threading
 import time
 import math
+from copy import copy
 
 from pythonosc.dispatcher import Dispatcher
 from pythonosc import osc_server
@@ -23,6 +24,12 @@ def setTorque(address, index, value):
 
 def clearErrors(address, index):
     odrive.clearErrors(index)
+
+    
+class EncoderEstimate:
+    position: float
+    velocity: float
+    timestamp: float
 
 
 if __name__ == "__main__":
@@ -48,37 +55,48 @@ if __name__ == "__main__":
 
     log_speed = 1.0
     last_time = time.time()*log_speed
-    age_max = 0 
-    ages = [] # to compute mean, usually ms
+    estimate_ages = [] # to compute mean, usually 5 ms
+
+    last_estimates = {} # { node_id:estimate }
 
     try:
         while True:
             time.sleep(0.001) # let other threads breathe
 
             if odrive.fault_detected:
-                print("FAULT")
+                print("ERROR ")
                 print(odrive.getPendingErrors())
-                # TODO test this
-
-            # compute the age of last measured position (should be max 10ms for 100Hz streaming)
-            age = round((time.monotonic() - odrive.latest_encoder[1].timestamp)*1000) # ms
-            ages.append(age)
-            if age > age_max:
-                age_max = age
+                break
             
+            for node_id, estimate in odrive.getNewEstimates().items():
+                if estimate is not None:
+                    last_estimates[node_id] = copy(estimate)
+                    
+                    logger.appendPoint("pos_"+str(node_id), estimate.timestamp, estimate.position)
+                    logger.appendPoint("vel_"+str(node_id), estimate.timestamp, estimate.velocity)
+                    
+                    # compute age
+                    estimate_ages.append(round((time.monotonic() - estimate.timestamp) *1000)) # ms
+
+
+                    
             # print stuff log_speed times by seconds
             t = math.floor(time.time()*log_speed)
             if t > last_time:
                 last_time = t
                 
                 print("---")
-                print("age de la derniere position:", round(sum(ages)/len(ages), 2), "ms (max ", age_max, ")")
-
+                if len(estimate_ages):
+                    print(len(estimate_ages), "positions received, age mean", round(sum(estimate_ages)/len(estimate_ages), 2), "ms, age max ", max(estimate_ages), "ms")
+                    estimate_ages = []
+                else:
+                    print("pas de nouvelle position")
+                
                 odrive.stats.print()
 
                 for node_id in odrive.node_ids:
-                    client.send_message("/pos", [odrive.latest_encoder[node_id].position for node_id in odrive.node_ids]) 
-                    client.send_message("/vel", [odrive.latest_encoder[node_id].velocity for node_id in odrive.node_ids]) 
+                    client.send_message("/pos", [last_estimates[node_id].position for node_id in odrive.node_ids]) 
+                    client.send_message("/vel", [last_estimates[node_id].velocity for node_id in odrive.node_ids]) 
 
 
     except Exception as ex:

@@ -7,7 +7,7 @@ class DataLogger:
     def __init__(self):
         self.data = {} 
 
-    def append(self, label, timestamp, value):
+    def appendPoint(self, label, timestamp, value):
         if label not in self.data:
             self.data[label] = []
         self.data[label].append((timestamp, value))

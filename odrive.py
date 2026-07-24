@@ -96,6 +96,7 @@ class ODriveCANManager:
         self.controller_mode = { node_id: CTRLMODE_UNDEFINED for node_id in self.node_ids }
 
         self.latest_encoder = { node_id: None for node_id in self.node_ids }
+        self.latest_encoder_flags = { node_id: False for node_id in self.node_ids }
         self.last_heartbeat = { node_id: None for node_id in self.node_ids }
         self.error_queue = queue.Queue()
 
@@ -134,6 +135,15 @@ class ODriveCANManager:
         self.bus.shutdown()
         print("ODriveCANManager stopped")
 
+    def getNewEstimates(self):
+        result = {node_id:self.latest_encoder[node_id]
+                    if self.latest_encoder_flags[node_id]
+                    else None 
+                    for node_id in self.node_ids}
+        self.latest_encoder_flags = { node_id: False for node_id in self.node_ids }
+        return result
+            
+
     def _readCAN(self):
         while self.running:
             try:
@@ -163,6 +173,7 @@ class ODriveCANManager:
 
                     with self.lock:
                         self.latest_encoder[node_id] = estimate
+                        self.latest_encoder_flags[node_id] = True
 
                 elif command_id == ID_HEARTBEAT:
                     if len(msg.data) < 5:
@@ -215,7 +226,7 @@ class ODriveCANManager:
             return
         
         try:
-            print("send CAN", node_id, command)
+            #print("send CAN", node_id, command)
             self.bus.send(can.Message(
                 arbitration_id=(node_id << 5 | command), 
                 data=payload,
@@ -314,10 +325,9 @@ class CANAnalytics:
     def print(self):
         with self.lock:
             for node_id in sorted(self.intervals):
-                command_msg = ""
+                command_msg = []
                 for command_id in sorted(self.intervals[node_id]):
-
-                    intervals = self.intervals[node_id]
+                    intervals = self.intervals[node_id][command_id]
                     count = len(intervals)
 
                     if len(intervals) == 0:
@@ -326,11 +336,144 @@ class CANAnalytics:
                         mean_period = (sum(intervals) / len(intervals))
                         frequency = ( 1.0 / mean_period if mean_period > 0 else None)
                         min_period = min(intervals)
-                        max_period = max(intervals),
+                        max_period = max(intervals)
+                        
+                        command_msg.append(f"0x{command_id:02X}:" f"{count}msg " f"{frequency:.1f}Hz " f"{mean_period*1000:0.1f}ms " f"({min_period*1000:0.0f}" f"-{max_period*1000:0.0f}ms)")
 
-                        command_msg.append(f"0x{command_id:02X}:" f"{count} msg " f"{mean_period * 1000} ms ({min_period * 1000}-{max_period * 1000})" f"({frequency:.1f} Hz )")
+                print(f"[{node_id}] " + " | ".join(command_msg))
 
-                print(f"#{node_id}: " + " | ".join(command_msg))
+            self.intervals = {}
+
+
+from collections import defaultdict
+class CANStatistics:
+
+    def __init__(self):
+
+        self.lock = threading.Lock()
+
+        # Nombre de messages depuis la derniere mesure
+        self.message_count = defaultdict(int)
+
+        # Dernier timestamp de reception
+        self.last_timestamp = {}
+
+        # Periodes entre messages
+        self.intervals = defaultdict(list)
+
+    def register_message(
+        self,
+        node_id,
+        command_id,
+        timestamp,
+    ):
+
+        key = (
+            node_id,
+            command_id,
+        )
+
+        with self.lock:
+
+            # Compteur
+            self.message_count[key] += 1
+
+            # Calcul periode
+            if key in self.last_timestamp:
+
+                dt = (
+                    timestamp
+                    - self.last_timestamp[key]
+                )
+
+                # Verification de securite
+                if dt >= 0:
+
+                    self.intervals[
+                        key
+                    ].append(dt)
+
+            # Sauvegarder dernier timestamp
+            self.last_timestamp[
+                key
+            ] = timestamp
+
+    def get_stats(self):
+
+        with self.lock:
+
+            stats = {}
+
+            for key, count in (
+                self.message_count.items()
+            ):
+
+                intervals = (
+                    self.intervals.get(
+                        key,
+                        []
+                    )
+                )
+
+                # ------------------------------------------------
+                # Aucun intervalle disponible
+                # ------------------------------------------------
+
+                if len(intervals) == 0:
+
+                    stats[key] = {
+                        "count": count,
+                        "frequency": None,
+                        "mean_period": None,
+                        "min_period": None,
+                        "max_period": None,
+                    }
+
+                    continue
+
+                # ------------------------------------------------
+                # Statistiques
+                # ------------------------------------------------
+
+                mean_period = (
+                    sum(intervals)
+                    / len(intervals)
+                )
+
+                min_period = min(
+                    intervals
+                )
+
+                max_period = max(
+                    intervals
+                )
+
+                frequency = (
+                    1.0
+                    / mean_period
+                    if mean_period > 0
+                    else None
+                )
+
+                stats[key] = {
+
+                    "count": count,
+
+                    "frequency":
+                        frequency,
+
+                    "mean_period":
+                        mean_period,
+
+                    "min_period":
+                        min_period,
+
+                    "max_period":
+                        max_period,
+                }
 
             self.message_count.clear()
-            self.intervals = {}
+
+            self.intervals.clear()
+
+            return stats
