@@ -51,8 +51,7 @@ if __name__ == "__main__":
 
     try:
         while True:
-            
-            age = round((time.monotonic() - odrive.latest_encoder[2].timestamp)*1000)
+            age = round((time.monotonic() - odrive.latest_encoder[2].timestamp)*1000) # ms
             dt.append(age)
             if age > age_max:
                 age_max = age
@@ -64,59 +63,13 @@ if __name__ == "__main__":
                 
                 print("---")
                 print("age de la derniere position:", round(sum(dt)/len(dt), 2), "ms (max ", age_max, ")")
-                
+
+                odrive.stats.print()
+
                 for node_id in odrive.node_ids:
                     client.send_message("/pos", [odrive.latest_encoder[node_id].position for node_id in odrive.node_ids]) 
                     client.send_message("/vel", [odrive.latest_encoder[node_id].velocity for node_id in odrive.node_ids]) 
-                
-                stats = (odrive.stats.get_stats())
-                for (
-                    node_id,
-                    command_id
-                ), data in stats.items():
 
-                    count = data[
-                        "count"
-                    ]
-
-                    frequency = data[
-                        "frequency"
-                    ]
-
-                    mean_period = data[
-                        "mean_period"
-                    ]
-
-                    min_period = data[
-                        "min_period"
-                    ]
-
-                    max_period = data[
-                        "max_period"
-                    ]
-                    if mean_period is None:
-
-                        print(
-                            f"Node {node_id} | "
-                            f"CMD 0x{command_id:02X} | "
-                            f"{count} msg/s | "
-                            f"periode: N/A"
-                        )
-
-                        continue
-
-                    print(
-                        f"Node {node_id} | "
-                        f"CMD 0x{command_id:02X} | "
-                        f"{count} msg/s | "
-                        f"freq={frequency:.2f} Hz | "
-                        f"period="
-                        f"{mean_period * 1000:.3f} ms | "
-                        f"min="
-                        f"{min_period * 1000:.3f} ms | "
-                        f"max="
-                        f"{max_period * 1000:.3f} ms"
-                    )
 
     except Exception as ex:
         print(f"Exception {ex} raised in main thread")
