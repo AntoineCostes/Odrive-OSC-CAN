@@ -1,6 +1,7 @@
 
 from odrive import ODriveCANManager
 from logger import Logger
+from spatializer import Spatializer
 import threading
 import time
 import math
@@ -39,6 +40,64 @@ def setVel(address, index, value):
         style_id="target",
     )
     
+def set3DVel(address, vx, vy, vz):
+    print("3d vel")
+    global odrive, logger, spatializer
+
+    t = time.monotonic()
+    logger.record(
+        label="vel_x",
+        value=vx,
+        timestamp=t,
+        plot_id="velocity",
+        curve_id=str(4),
+        style_id="target",
+    )
+    logger.record(
+        label="vel_y",
+        value=vy,
+        timestamp=t,
+        plot_id="velocity",
+        curve_id=str(5),
+        style_id="target",
+    )
+    logger.record(
+        label="vel_z",
+        value=vz,
+        timestamp=t,
+        plot_id="velocity",
+        curve_id=str(6),
+        style_id="target",
+    )
+    positions = [last_estimates[id].position for id in [1, 2, 3]]
+    v_motors = spatializer.velTransform([vx, vy, vz], positions)
+
+    if v_motors is not None:
+        logger.record(
+            label="motor_x",
+            value=v_motors[0],
+            timestamp=t,
+            plot_id="velocity",
+            curve_id=str(4),
+            style_id="actual",
+        )
+        logger.record(
+            label="motor_y",
+            value=v_motors[1],
+            timestamp=t,
+            plot_id="velocity",
+            curve_id=str(5),
+            style_id="actual",
+        )
+        logger.record(
+            label="motor_z",
+            value=v_motors[2],
+            timestamp=t,
+            plot_id="velocity",
+            curve_id=str(6),
+            style_id="actual",
+        )
+    
 def setTorque(address, index, value):
     global odrive
     odrive.setTorque(index, value)
@@ -66,11 +125,13 @@ if __name__ == "__main__":
     
     odrive = ODriveCANManager(node_ids= [1,2,3])
     logger = Logger()
+    spatializer = Spatializer()
     stop_and_plot = False
 
     dispatcher = Dispatcher()
     dispatcher.map("/pos", setPos) # index, value
     dispatcher.map("/vel", setVel) # index, value
+    dispatcher.map("/3d", set3DVel) # index, value
     dispatcher.map("/torque", setTorque) # index, value
     dispatcher.map("/clear", clearErrors) # index
     dispatcher.map("/plot", plot)
@@ -99,12 +160,9 @@ if __name__ == "__main__":
             
             if stop_and_plot:
                 print("STOP AND PLOT")
-                odrive.stop() 
+                odrive.stopMotors()
                 logger.save_plots()
                 stop_and_plot = False
-                while True:
-                    plot.pause(0.1)
-                    time.sleep(1.0)
 
             # log pos_vel
             for node_id, estimate in odrive.getNewEstimates().items():
@@ -137,17 +195,19 @@ if __name__ == "__main__":
             if t > last_time:
                 last_time = t
                 
-                print("---")
-                if len(estimate_ages):
-                    print(len(estimate_ages), "positions received over", 1.0/log_speed, "s, age mean", round(sum(estimate_ages)/len(estimate_ages), 2), "ms, age max ", max(estimate_ages), "ms")
-                    estimate_ages = []
-                else:
-                    print("pas de nouvelle position")
-                
-                odrive.stats.print()
+                # print CAN perfs
+                if False:
+                    print("---")
+                    if len(estimate_ages):
+                        print(len(estimate_ages), "positions received over", 1.0/log_speed, "s, age mean", round(sum(estimate_ages)/len(estimate_ages), 2), "ms, age max ", max(estimate_ages), "ms")
+                        estimate_ages = []
+                    else:
+                        print("pas de nouvelle position")
+                    
+                    odrive.stats.print()
 
                 for node_id in odrive.node_ids:
-                    #print([last_estimates[node_id].timestamp, last_estimates[node_id].position, last_estimates[node_id].velocity])
+                    print([last_estimates[node_id].timestamp, last_estimates[node_id].position, last_estimates[node_id].velocity])
                     client.send_message("/pos", [last_estimates[node_id].position for node_id in odrive.node_ids]) 
                     client.send_message("/vel", [last_estimates[node_id].velocity for node_id in odrive.node_ids]) 
 
