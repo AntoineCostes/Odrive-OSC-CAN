@@ -1,115 +1,299 @@
-import csv
-import datetime
 import matplotlib.pyplot as plt
+import numpy as np
+from collections import defaultdict
 
 
-class DataLogger:
+class Logger:
+
     def __init__(self):
-        self.data = {} 
 
-    def appendPoint(self, label, timestamp, value):
-        if label not in self.data:
-            self.data[label] = []
-        self.data[label].append((timestamp, value))
-
-    def save_and_plot(self):
-        self.save()
-        self.plot()
-
-    def save(self):
-        labels = list(self.data.keys())
-
-        if not labels:
-            print("Aucune donnée à sauvegarder.")
-            return
-
-        max_length = max( len(self.data[label]) for label in labels )
-        
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        filepath = f"log/logs_{timestamp}.csv"
-
-        with open( filepath, "w", newline="", encoding="utf-8") as file:
-
-            writer = csv.writer(file)
-            header = []
-            for label in labels:
-                header.append(f"{label}_t")
-                header.append(label)
-            writer.writerow(header)
-
-            for i in range(max_length):
-                row = []
-                for label in labels:
-                    if i < len(self.data[label]):
-                        row.append(self.data[label][0])
-                        row.append(self.data[label][1])
-                    else:
-                        row.append("")
-                        row.append("")
-
-                writer.writerow(row)
-
-        print(
-            f"Données sauvegardées dans : "
-            f"{filepath}"
+        # Données enregistrées
+        #
+        # plot_id
+        #     curve_id
+        #         style_id
+        #             name
+        #                 times
+        #                 values
+        #
+        self.data = defaultdict(
+            lambda: defaultdict(
+                lambda: defaultdict(
+                    lambda: {
+                        "names": [],
+                        "times": [],
+                        "values": [],
+                    }
+                )
+            )
         )
 
+        # Configuration visuelle
+        self.curve_colors = {}
+        self.styles = {}
 
-    def plot(self):
+        # Titres des graphiques
+        self.plot_titles = {}
 
-        if not self.data:
-            print("Aucune donnée à afficher.")
-            return
+        # Labels des axes
+        self.plot_ylabels = {}
 
-        labels = list(self.data.keys())
+        self.set_curve_color(
+            "motor_A",
+            "tab:blue",
+        )
 
-        fig, ax = plt.subplots()
+        self.set_curve_color(
+            "motor_B",
+            "tab:orange",
+        )
 
-        # first axis
-        axes = [ax]
+        self.set_curve_color(
+            "motor_C",
+            "tab:green",
+        )
 
-        colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+        self.set_style(
+            "actual",
+            "-",
+        )
 
-        for i, label in enumerate(labels):
+        self.set_style(
+            "target",
+            "--",
+        )
+        self.set_plot_config(
+            "position",
+            title="Positions",
+            ylabel="Position",
+        )
 
-            timestamps = [p[0] for p in self.data[label]]
-            values = [p[1] for p in self.data[label]]
+        self.set_plot_config(
+            "velocity",
+            title="Vitesses",
+            ylabel="Vitesse",
+        )
 
-            if i == 0:
-                current_ax = ax
-            else:
-                current_ax = ax.twinx()
-                # Décalage des axes Y supplémentaires
-                current_ax.spines["right"].set_position( ("outward", 60 * (i - 1)) )
-                axes.append(current_ax)
+    # ==========================================================
+    # Configuration
+    # ==========================================================
 
-            color = colors[i % len(colors)]
+    def set_curve_color(
+        self,
+        curve_id,
+        color,
+    ):
 
-            current_ax.plot(timestamps, values, label=label, color=color)
+        self.curve_colors[
+            curve_id
+        ] = color
 
-            current_ax.set_ylabel( label, color=color)
+    def set_style(
+        self,
+        style_id,
+        linestyle,
+    ):
 
-            current_ax.tick_params( axis="y", colors=color)
+        self.styles[
+            style_id
+        ] = linestyle
 
-            current_ax.relim()
-            current_ax.autoscale_view()
+    def set_plot_config(
+        self,
+        plot_id,
+        title=None,
+        ylabel=None,
+    ):
 
-        ax.set_xlabel("Time (s)")
+        self.plot_titles[
+            plot_id
+        ] = title
 
-        ax.set_title("Data acquisition")
+        self.plot_ylabels[
+            plot_id
+        ] = ylabel
 
-        ax.grid(True)
+    # ==========================================================
+    # Enregistrement
+    # ==========================================================
 
-        lines = []
-        labels_legend = []
+    def record(
+        self,
+        name,
+        value,
+        timestamp,
+        plot_id,
+        curve_id,
+        style_id,
+    ):
 
-        for current_ax in axes:
-            line_list, label_list = ( current_ax.get_legend_handles_labels() )
-            lines.extend(line_list)
-            labels_legend.extend(label_list)
+        data = self.data[
+            plot_id
+        ][
+            curve_id
+        ][
+            style_id
+        ]
 
-        ax.legend(lines, labels_legend, loc="upper left")
+        data["names"].append(
+            name
+        )
 
-        fig.tight_layout()
+        data["times"].append(
+            timestamp
+        )
 
-        plt.show()
+        data["values"].append(
+            value
+        )
+
+    # ==========================================================
+    # Plot
+    # ==========================================================
+
+    def plot(
+        self,
+    ):
+
+        for plot_id, curves in (
+            self.data.items()
+        ):
+
+            # --------------------------------------------------
+            # Figure
+            # --------------------------------------------------
+
+            fig, ax = plt.subplots(
+                figsize=(12, 6)
+            )
+
+            # Pour calculer l'échelle Y commune
+            all_values = []
+
+            # --------------------------------------------------
+            # Courbes
+            # --------------------------------------------------
+
+            for curve_id, styles in (
+                curves.items()
+            ):
+
+                for style_id, data in (
+                    styles.items()
+                ):
+
+                    times = np.array(
+                        data["times"]
+                    )
+
+                    values = np.array(
+                        data["values"]
+                    )
+
+                    if len(values) == 0:
+                        continue
+
+                    # Sauvegarde pour l'échelle
+                    all_values.extend(
+                        values
+                    )
+
+                    # Couleur
+                    color = (
+                        self.curve_colors.get(
+                            curve_id,
+                            None,
+                        )
+                    )
+
+                    # Style
+                    linestyle = (
+                        self.styles.get(
+                            style_id,
+                            "-",
+                        )
+                    )
+
+                    # Label
+                    label = (
+                        f"{curve_id} "
+                        f"({style_id})"
+                    )
+
+                    ax.plot(
+                        times,
+                        values,
+                        color=color,
+                        linestyle=linestyle,
+                        label=label,
+                    )
+
+            # --------------------------------------------------
+            # Échelle Y commune
+            # --------------------------------------------------
+
+            if len(all_values) > 0:
+
+                y_min = min(
+                    all_values
+                )
+
+                y_max = max(
+                    all_values
+                )
+
+                # Marge
+                margin = (
+                    0.05
+                    * (y_max - y_min)
+                )
+
+                # Cas valeur constante
+                if margin == 0:
+
+                    margin = 1.0
+
+                ax.set_ylim(
+                    y_min - margin,
+                    y_max + margin,
+                )
+
+            # --------------------------------------------------
+            # Configuration graphique
+            # --------------------------------------------------
+
+            title = (
+                self.plot_titles.get(
+                    plot_id,
+                    plot_id,
+                )
+            )
+
+            ylabel = (
+                self.plot_ylabels.get(
+                    plot_id,
+                    "",
+                )
+            )
+
+            ax.set_title(
+                title
+            )
+
+            ax.set_xlabel(
+                "Temps (s)"
+            )
+
+            ax.set_ylabel(
+                ylabel
+            )
+
+            ax.grid(
+                True
+            )
+
+            ax.legend()
+
+            plt.tight_layout()
+
+            plt.show()

@@ -35,7 +35,7 @@ class EncoderEstimate:
 if __name__ == "__main__":
     
     odrive = ODriveCANManager(node_ids= [1,2,3])
-    logger = DataLogger()
+    logger = Logger()
 
     dispatcher = Dispatcher()
     dispatcher.map("/pos", setPos) # index, value
@@ -72,8 +72,23 @@ if __name__ == "__main__":
                 if estimate is not None:
                     last_estimates[node_id] = copy(estimate)
                     
-                    logger.appendPoint("pos_"+str(node_id), estimate.timestamp, estimate.position)
-                    logger.appendPoint("vel_"+str(node_id), estimate.timestamp, estimate.velocity)
+                                  
+                    logger.record(
+                        name="pos_"+str(node_id),
+                        value=estimate.position,
+                        timestamp=estimate.timestamp,
+                        plot_id="position",
+                        curve_id=str(node_id),
+                        style_id="actual",
+                    )
+                    logger.record(
+                        name="vel_"+str(node_id),
+                        value=estimate.position,
+                        timestamp=estimate.timestamp,
+                        plot_id="velocity",
+                        curve_id=str(node_id),
+                        style_id="actual",
+                    )
                     
                     # compute age
                     estimate_ages.append(round((time.monotonic() - estimate.timestamp) *1000)) # ms
