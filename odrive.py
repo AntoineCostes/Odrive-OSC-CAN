@@ -74,11 +74,6 @@ class EncoderEstimate:
     timestamp: float
 
 
-@dataclass
-class ODriveError:
-    node_id: int
-    axis_error: int
-    timestamp: float
 
 class ODriveCANManager:
     def __init__(self,
@@ -98,12 +93,9 @@ class ODriveCANManager:
         self.latest_encoder = { node_id: None for node_id in self.node_ids }
         self.latest_encoder_flags = { node_id: False for node_id in self.node_ids }
         self.last_heartbeat = { node_id: None for node_id in self.node_ids }
-        self.error_queue = queue.Queue()
 
         self.lock = threading.Lock()
-        self.running = True
         self.rx_thread = None
-        self.fault_detected = False
 
         self.stats = CANAnalytics()
         self.bus = can.interface.Bus(channel=channel, bustype=bustype, bitrate=bitrate)
@@ -117,9 +109,10 @@ class ODriveCANManager:
             self._setAxisClosedLoop(node_id)
             while self.axis_state[node_id] != AXISSTATE_CLOSED_LOOP_CONTROL:
                 pass
-            self.setVel(node_id, node_id*1.0)
+            self.setVel(node_id, 0.0)
 
     def start(self):
+        self.running = True
         self.rx_thread = threading.Thread(
             target=self._readCAN,
             name="ODriveCAN-RX",
@@ -128,11 +121,15 @@ class ODriveCANManager:
         self.rx_thread.start()
 
     def stop(self):
+        if not self.running:
+            return
+        
         self.stopMotors()
         self.running = False
-        if self.rx_thread is not None:
+        if ( self.rx_thread is not None and self.rx_thread.is_alive() and threading.current_thread() is not self.rx_thread ):
             self.rx_thread.join(timeout=1.0)
         self.bus.shutdown()
+        self.rx_thread = None
         print("ODriveCANManager stopped")
 
     def getNewEstimates(self):
@@ -197,28 +194,15 @@ class ODriveCANManager:
                     # handle error
                     if axis_error != 0:
                         if axis_error != 0:
-                            error = ODriveError(node_id=node_id, axis_error=axis_error, timestamp=now)
-                            print("ERROR on node", error.node_id, ":", ERROR_NAMES[error.axis_error])
-                            self.error_queue.put(error)
-                            self.fault_detected = True
-                            # TODO fault_detected => stop motors ?
+                            print("ERROR on node", node_id, ":", ERROR_NAMES[axis_error])
+                            self.stop()
 
             except can.CanError as e:
                 print(f"[CAN RX ERROR] {e}")
 
             except Exception as e:
                 print(f"[RX THREAD ERROR] {e}")
-                self.fault_detected = True
 
-    def getPendingErrors(self):
-            errors = []
-            while True:
-                try:
-                    error = (self.error_queue.get_nowait())
-                    errors.append(error)
-                except queue.Empty:
-                    break
-            return errors
 
     def sendCAN(self, node_id, command, payload):
         if not self.bus:

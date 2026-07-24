@@ -79,6 +79,7 @@ if __name__ == "__main__":
         while True:
             time.sleep(0.001) # let other threads breathe
             
+            
             if stop_and_plot:
                 print("STOP AND PLOT")
                 odrive.stop() 
@@ -89,10 +90,6 @@ if __name__ == "__main__":
                     time.sleep(1.0)
                     
                 
-            if odrive.fault_detected:
-                print("ERROR ")
-                print(odrive.getPendingErrors())
-                break
             
             for node_id, estimate in odrive.getNewEstimates().items():
                 if estimate is not None:
