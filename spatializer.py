@@ -8,9 +8,6 @@ class Spatializer:
         self.nodes_id = [3, 2, 1]
         self.radius = [0.0395/2, 0.0202, 0.021]
         self.l0 = [0.0, 0.0, 0.0] # 0.0 if calibration is done
-
-        # self.vel_ground = [0.0, 0.0, 0.0]
-        # self.lengths = [0.0, 0.0, 0.0]
         
         params = {}
 
@@ -35,16 +32,17 @@ class Spatializer:
         #=======================================#
 
         # postion of A, B, C in the robot coordinate
+        # Alk-kashi: lBC² = lAB² + lCA² -2*lAB*lCA*Da/lCA
         self.DA = (self.l_AB**2+self.l_CA**2-self.l_BC**2)/(2*self.l_AB)
         self.DB = self.l_AB - self.DA
-        self.DC = np.sqrt(self.l_CA**2-self.DA**2)
+        self.DC = np.sqrt(self.l_CA**2-self.DA**2) # pythagore
 
         # Projection of D, E, F are projections of A, B, C on the ground
         l_DE = np.sqrt(self.l_AB**2-(h_A-h_B)**2)
         l_EF = np.sqrt(self.l_BC**2-(h_B-h_C)**2)
         l_FD = np.sqrt(self.l_CA**2-(h_C-h_A)**2)
 
-        DD = (l_DE**2+l_EF**2-l_EF**2)/(2*l_DE)
+        DD = (l_DE**2+l_FD**2-l_EF**2)/(2*l_DE) # Al kashi
         DE = l_DE - DD
         DF = np.sqrt(l_FD**2-DD**2)
 
@@ -71,9 +69,6 @@ class Spatializer:
 
         self.R_s_r = np.vstack([e_x, e_y, e_z])
 
-        print(e_x)
-        print(e_y)
-        print(e_z)
 
         
     def velTransform(self, velocity_setpoint, motor_turns):
@@ -111,7 +106,7 @@ class Spatializer:
 
         
         x = (lengths[1]**2 - self.DB**2 - lengths[0]**2 + self.DA**2) / (2* (self.DA+self.DB))
-        y = (2 * self.DA * x + self.DC**2 - self.DA**2 - lengths[2]**2 + lengths[0]**2) / (2 * self.DC)
+        y = (-2 * self.DA * x + self.DC**2 - self.DA**2 - lengths[2]**2 + lengths[0]**2) / (2 * self.DC)
         z2 = lengths[2]**2 - x**2 -(self.DC-y)**2
         if z2 < 0 :
             print("No intersection with sphere C")
