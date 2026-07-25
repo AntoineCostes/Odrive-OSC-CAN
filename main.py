@@ -195,9 +195,9 @@ if __name__ == "__main__":
             if t > last_time:
                 last_time = t
                 
+                print("---")
                 # print CAN perfs
                 if False:
-                    print("---")
                     if len(estimate_ages):
                         print(len(estimate_ages), "positions received over", 1.0/log_speed, "s, age mean", round(sum(estimate_ages)/len(estimate_ages), 2), "ms, age max ", max(estimate_ages), "ms")
                         estimate_ages = []
@@ -207,7 +207,7 @@ if __name__ == "__main__":
                     odrive.stats.print()
 
                 for node_id in odrive.node_ids:
-                    print([last_estimates[node_id].timestamp, last_estimates[node_id].position, last_estimates[node_id].velocity])
+                    print(node_id, [round(last_estimates[node_id].timestamp,2), round(last_estimates[node_id].position,2), round(last_estimates[node_id].velocity,2)])
                     client.send_message("/pos", [last_estimates[node_id].position for node_id in odrive.node_ids]) 
                     client.send_message("/vel", [last_estimates[node_id].velocity for node_id in odrive.node_ids]) 
 
