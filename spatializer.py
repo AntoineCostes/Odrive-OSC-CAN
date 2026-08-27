@@ -105,7 +105,7 @@ class Spatializer:
             return None
 
         
-        x = (lengths[1]**2 - self.DB**2 - lengths[0]**2 + self.DA**2) / (2* (self.DA+self.DB))
+        x = (lengths[0]**2 - lengths[1]**2 + self.DB**2 - self.DA**2) / (2* (self.DA+self.DB))
         y = (-2 * self.DA * x + self.DC**2 - self.DA**2 - lengths[2]**2 + lengths[0]**2) / (2 * self.DC)
         z2 = lengths[2]**2 - x**2 -(self.DC-y)**2
         if z2 < 0 :
