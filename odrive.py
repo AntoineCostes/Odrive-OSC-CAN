@@ -10,6 +10,7 @@ CURRENT_LIMIT = 5.0 # amperes
 
 # Command ids
 # https://odrive-cdn.nyc3.digitaloceanspaces.com/releases/docs/NBlf3rgI8zzL4eTvLjFqdETy04VScp3e8YNoAb3BcPY/manual/can-protocol.html#overview
+ID_GET_VERSION = 0x00
 ID_HEARTBEAT = 1
 ID_GET_ERROR = 3
 ID_SET_AXIS_STATE = 7	
@@ -103,13 +104,17 @@ class ODriveCANManager:
         
         print("[ODrive] CAN bus opened");
         self.start()
-        # TODO check for status
-
+        self.initialized = False
+        
+        for node_id in self.node_ids:
+            self.clearErrors(node_id)
+        
+        #t0 = time.time()
         for node_id in self.node_ids:
             self._setAxisClosedLoop(node_id)
-            while self.axis_state[node_id] != AXISSTATE_CLOSED_LOOP_CONTROL:
-                pass
             self.setVel(node_id, 0.0)
+            
+         
 
     def start(self):
         self.running = True
@@ -149,11 +154,17 @@ class ODriveCANManager:
                     continue
                 
                 node_id = msg.arbitration_id >> 5
-                if node_id not in self.node_ids:
+                if node_id == 0:
+                    print("--")
+                    print("unknown message from node 0")
+                    print(msg.data)
+                    print("--")
+                elif node_id not in self.node_ids:
                     print("unkown node_id:", node_id)
                     continue
                 
                 command_id = (msg.arbitration_id & 0x1F)
+                #print(command_id, "from", node_id)
                 
                 self.stats.register_message(
                     node_id,
@@ -172,10 +183,13 @@ class ODriveCANManager:
                         self.latest_encoder[node_id] = estimate
                         self.latest_encoder_flags[node_id] = True
 
+                elif command_id == ID_GET_VERSION:
+                    print("VERSION RECEIVED")
                 elif command_id == ID_HEARTBEAT:
                     if len(msg.data) < 5:
                         return
                     now = time.monotonic()
+                    #print("heartbeat from", node_id)
                     
                     with self.lock:
                         self.last_heartbeat[node_id] = now
@@ -195,13 +209,18 @@ class ODriveCANManager:
                     if axis_error != 0:
                         if axis_error != 0:
                             print("ERROR on node", node_id, ":", ERROR_NAMES[axis_error])
-                            self.stop()
+                            if self.initialized:
+                                self.stop()
+                else:
+                    print(command_id, "from", node_id)
 
             except can.CanError as e:
                 print(f"[CAN RX ERROR] {e}")
 
             except Exception as e:
+                # TODO clarifier dans quels cas cela arrive
                 print(f"[RX THREAD ERROR] {e}")
+                #self.stop()
 
 
     def sendCAN(self, node_id, command, payload):
@@ -218,8 +237,8 @@ class ODriveCANManager:
             ))
 
         except can.exceptions.CanOperationError:
-            print("CanOperationError")
-
+            print("CanOperationError: could not send CAN message")
+        
     def _setAxisClosedLoop(self, node_id):
         if node_id not in self.node_ids:
             return
@@ -241,6 +260,15 @@ class ODriveCANManager:
             self.controller_mode[node_id] = mode
         return False
     
+    def resetPosistion(self, node_id):
+        if node_id not in self.node_ids:
+            return
+        if not self._setAxisClosedLoop(node_id):
+            print("reset pos not ready")
+            return
+        self._setControllerMode(node_id, CTRLMODE_POS_CTRL)
+        self.sendCAN(node_id, ID_SET_ABSOLUTE_POSITION, struct.pack('<f', 0)) # position, velocity feedforward, torque feedforward
+
     def setPos(self, node_id, turns):
         if node_id not in self.node_ids:
             return
